@@ -1,1 +1,2 @@
 /target
+/podman-varlink/src/io_podman.rs
