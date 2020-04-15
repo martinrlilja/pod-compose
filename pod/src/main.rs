@@ -1,5 +1,5 @@
 use anyhow::Result;
-use podman_varlink::VarlinkClient;
+use podman_varlink::{VarlinkClient, VarlinkClientInterface};
 use structopt::StructOpt;
 use varlink::Connection;
 
@@ -27,11 +27,11 @@ fn main() -> Result<()> {
     let opt = Opt::from_args();
     println!("{:?}", opt);
 
-    let connection = Connection::with_bridge(
-        "ssh <podman-machine>",
-    )?;
+    let connection = Connection::with_bridge("podman varlink --timeout=0")?;
     let mut podman = VarlinkClient::new(connection.clone());
-    let reply = podman.ping().call()?;
+    let version = podman.get_version().call()?;
+
+    println!("{:?}", version);
 
     Ok(())
 }
