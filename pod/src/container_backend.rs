@@ -1,0 +1,272 @@
+use anyhow::{anyhow, Result};
+use ignore::WalkBuilder;
+use number_prefix::NumberPrefix;
+use std::fs::OpenOptions;
+use tar::Builder as TarBuilder;
+use tempfile::TempDir;
+use varlink::Connection;
+
+use podman_varlink::{BuildInfo, Create as CreateContainer, VarlinkClient, VarlinkClientInterface};
+
+use crate::models::{ContainerId, ContainerSpec, ImageId, ImageSpec};
+
+pub trait ContainerBackend {
+    fn image_exists(&mut self, name: &str) -> Result<bool>;
+
+    fn build_image(&mut self, image_spec: ImageSpec) -> Result<ImageId>;
+
+    fn container_exists(&mut self, name: &str) -> Result<bool>;
+
+    fn create_container(&mut self, container_spec: ContainerSpec) -> Result<ContainerId>;
+
+    fn start_container(&mut self, name: &str) -> Result<ContainerId>;
+}
+
+pub struct PodmanBackend {
+    client: VarlinkClient,
+}
+
+impl PodmanBackend {
+    pub fn connect() -> Result<PodmanBackend> {
+        let connection = Connection::with_activate(r#"podman varlink "$VARLINK_ADDRESS""#)?;
+        let client = VarlinkClient::new(connection.clone());
+
+        Ok(PodmanBackend { client })
+    }
+}
+
+impl ContainerBackend for PodmanBackend {
+    fn image_exists(&mut self, name: &str) -> Result<bool> {
+        let reply = self.client.image_exists(name.into()).call()?;
+        Ok(reply.exists == 0)
+    }
+
+    fn build_image(&mut self, image_spec: ImageSpec) -> Result<ImageId> {
+        println!("{:?}", image_spec);
+
+        let temp_dir = TempDir::new()?;
+        let temp_context_path = temp_dir.path().join("context.tar");
+        let temp_context = {
+            let mut options = OpenOptions::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            options.write(true).create(true).open(&temp_context_path)?
+        };
+
+        let mut tar = TarBuilder::new(temp_context);
+        let walk = WalkBuilder::new(image_spec.context)
+            .add_custom_ignore_filename(".dockerignore")
+            .ignore(false)
+            .git_global(false)
+            .git_ignore(false)
+            .git_exclude(false)
+            .hidden(false)
+            .build();
+
+        let mut context_size = 0;
+        for result in walk {
+            let result = result?;
+            tar.append_path(result.path())?;
+            context_size += result.metadata()?.len();
+        }
+
+        match NumberPrefix::binary(context_size as f32) {
+            NumberPrefix::Standalone(bytes) => println!("Archived build context ({} bytes)", bytes),
+            NumberPrefix::Prefixed(prefix, n) => {
+                println!("Archived build context ({:.1} {}B)", n, prefix)
+            }
+        };
+
+        tar.finish()?;
+
+        let context_dir = temp_context_path
+            .to_str()
+            .ok_or_else(|| anyhow!("the canonical context path is not valid utf-8"))?;
+
+        let dockerfile = image_spec.dockerfile.canonicalize()?;
+        let dockerfile = dockerfile
+            .to_str()
+            .ok_or_else(|| anyhow!("the canonical dockerfile path is not valid utf-8"))?;
+
+        let build_info = BuildInfo {
+            architecture: None,
+            addCapabilities: None,
+            additionalTags: None,
+            annotations: None,
+            buildArgs: None,
+            buildOptions: None,
+            cniConfigDir: None,
+            cniPluginDir: None,
+            compression: None,
+            contextDir: context_dir.into(),
+            defaultsMountFilePath: None,
+            devices: None,
+            dockerfiles: vec![dockerfile.into()],
+            dropCapabilities: None,
+            err: None,
+            forceRmIntermediateCtrs: None,
+            iidfile: None,
+            label: None,
+            layers: None,
+            nocache: Some(false),
+            os: None,
+            out: None,
+            output: image_spec.image_name,
+            outputFormat: None,
+            pullPolicy: None,
+            quiet: None,
+            remoteIntermediateCtrs: None,
+            reportWriter: None,
+            runtimeArgs: None,
+            signBy: None,
+            squash: None,
+            target: image_spec.target,
+            transientMounts: None,
+        };
+
+        let mut image_id = None;
+
+        for reply in self.client.build_image(build_info).more()? {
+            let reply = reply?;
+
+            if !reply.image.logs.is_empty() {
+                for line in reply.image.logs {
+                    print!("{}", line);
+                }
+            }
+
+            if !reply.image.id.is_empty() {
+                image_id = Some(reply.image.id);
+            }
+        }
+
+        temp_dir.close()?;
+
+        let image = ImageId(image_id.unwrap());
+        Ok(image)
+    }
+
+    fn container_exists(&mut self, name: &str) -> Result<bool> {
+        let reply = self.client.container_exists(name.into()).call()?;
+        Ok(reply.exists == 0)
+    }
+
+    fn create_container(&mut self, container_spec: ContainerSpec) -> Result<ContainerId> {
+        let create_container = CreateContainer {
+            args: vec![container_spec.image_name],
+            addHost: Default::default(),
+            annotation: Default::default(),
+            attach: Default::default(),
+            blkioWeight: Default::default(),
+            blkioWeightDevice: Default::default(),
+            capAdd: Default::default(),
+            capDrop: Default::default(),
+            cgroupParent: Default::default(),
+            cidFile: Default::default(),
+            conmonPidfile: Default::default(),
+            command: Default::default(),
+            cpuPeriod: Default::default(),
+            cpuQuota: Default::default(),
+            cpuRtPeriod: Default::default(),
+            cpuRtRuntime: Default::default(),
+            cpuShares: Default::default(),
+            cpus: Default::default(),
+            cpuSetCpus: Default::default(),
+            cpuSetMems: Default::default(),
+            detach: Default::default(),
+            detachKeys: Default::default(),
+            device: Default::default(),
+            deviceReadBps: Default::default(),
+            deviceReadIops: Default::default(),
+            deviceWriteBps: Default::default(),
+            deviceWriteIops: Default::default(),
+            dns: Default::default(),
+            dnsOpt: Default::default(),
+            dnsSearch: Default::default(),
+            dnsServers: Default::default(),
+            entrypoint: Default::default(),
+            env: Default::default(),
+            envFile: Default::default(),
+            expose: Default::default(),
+            gidmap: Default::default(),
+            groupadd: Default::default(),
+            healthcheckCommand: Default::default(),
+            healthcheckInterval: Default::default(),
+            healthcheckRetries: Default::default(),
+            healthcheckStartPeriod: Default::default(),
+            healthcheckTimeout: Default::default(),
+            hostname: Default::default(),
+            imageVolume: Default::default(),
+            init: Default::default(),
+            initPath: Default::default(),
+            interactive: Default::default(),
+            ip: Default::default(),
+            ipc: Default::default(),
+            kernelMemory: Default::default(),
+            label: Default::default(),
+            labelFile: Default::default(),
+            logDriver: Default::default(),
+            logOpt: Default::default(),
+            macAddress: Default::default(),
+            memory: Default::default(),
+            memoryReservation: Default::default(),
+            memorySwap: Default::default(),
+            memorySwappiness: Default::default(),
+            name: Some(container_spec.container_name),
+            network: Default::default(),
+            noHosts: Default::default(),
+            oomKillDisable: Default::default(),
+            oomScoreAdj: Default::default(),
+            overrideArch: Default::default(),
+            overrideOS: Default::default(),
+            pid: Default::default(),
+            pidsLimit: Default::default(),
+            pod: Default::default(),
+            privileged: Default::default(),
+            publish: Default::default(),
+            publishAll: Default::default(),
+            pull: Default::default(),
+            quiet: Default::default(),
+            readonly: Default::default(),
+            readonlytmpfs: Default::default(),
+            restart: Default::default(),
+            rm: Default::default(),
+            rootfs: Default::default(),
+            securityOpt: Default::default(),
+            shmSize: Default::default(),
+            stopSignal: Default::default(),
+            stopTimeout: Default::default(),
+            storageOpt: Default::default(),
+            subuidname: Default::default(),
+            subgidname: Default::default(),
+            sysctl: Default::default(),
+            systemd: Default::default(),
+            tmpfs: Default::default(),
+            tty: Default::default(),
+            uidmap: Default::default(),
+            ulimit: Default::default(),
+            user: Default::default(),
+            userns: Default::default(),
+            uts: Default::default(),
+            mount: Default::default(),
+            volume: Default::default(),
+            volumesFrom: Default::default(),
+            workDir: Default::default(),
+        };
+
+        let reply = self.client.create_container(create_container).call()?;
+        let container = ContainerId(reply.container);
+
+        Ok(container)
+    }
+
+    fn start_container(&mut self, name: &str) -> Result<ContainerId> {
+        let reply = self.client.start_container(name.to_owned()).call()?;
+        let container = ContainerId(reply.container);
+
+        Ok(container)
+    }
+}

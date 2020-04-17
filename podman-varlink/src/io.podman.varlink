@@ -1,3 +1,7 @@
+# This file is from the libpod project, the license can be found here:
+# https://github.com/containers/libpod/blob/master/LICENSE
+# This file has been modified from the original.
+
 # Podman Service Interface and API description.  The master version of this document can be found
 # in the [API.md](https://github.com/containers/libpod/blob/master/API.md) file in the upstream libpod repository.
 interface io.podman
@@ -414,39 +418,39 @@ type BuildOptions (
 
 # BuildInfo is used to describe user input for building images
 type BuildInfo (
-    architecture: string,
-    addCapabilities: []string,
-    additionalTags: []string,
-    annotations: []string,
-    buildArgs: [string]string,
-    buildOptions: BuildOptions,
-    cniConfigDir: string,
-    cniPluginDir: string,
-    compression: string,
+    architecture: ?string,
+    addCapabilities: ?[]string,
+    additionalTags: ?[]string,
+    annotations: ?[]string,
+    buildArgs: ?[string]string,
+    buildOptions: ?BuildOptions,
+    cniConfigDir: ?string,
+    cniPluginDir: ?string,
+    compression: ?string,
     contextDir: string,
-    defaultsMountFilePath: string,
-    devices: []string,
+    defaultsMountFilePath: ?string,
+    devices: ?[]string,
     dockerfiles: []string,
-    dropCapabilities: []string,
-    err: string,
-    forceRmIntermediateCtrs: bool,
-    iidfile: string,
-    label: []string,
-    layers: bool,
-    nocache: bool,
-    os: string,
-    out: string,
+    dropCapabilities: ?[]string,
+    err: ?string,
+    forceRmIntermediateCtrs: ?bool,
+    iidfile: ?string,
+    label: ?[]string,
+    layers: ?bool,
+    nocache: ?bool,
+    os: ?string,
+    out: ?string,
     output: string,
-    outputFormat: string,
-    pullPolicy: string,
-    quiet: bool,
-    remoteIntermediateCtrs: bool,
-    reportWriter: string,
-    runtimeArgs: []string,
-    signBy: string,
-    squash: bool,
-    target: string,
-    transientMounts: []string
+    outputFormat: ?string,
+    pullPolicy: ?string,
+    quiet: ?bool,
+    remoteIntermediateCtrs: ?bool,
+    reportWriter: ?string,
+    runtimeArgs: ?[]string,
+    signBy: ?string,
+    squash: ?bool,
+    target: ?string,
+    transientMounts: ?[]string
 )
 
 # MoreResponse is a struct for when responses from varlink requires longer output
