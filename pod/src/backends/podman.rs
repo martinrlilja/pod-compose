@@ -8,28 +8,12 @@ use varlink::Connection;
 
 use podman_varlink::{BuildInfo, Create as CreateContainer, VarlinkClient, VarlinkClientInterface};
 
-use crate::models::{
-    Container, ContainerId, ContainerName, ContainerSpec, ContainerStatus, ImageId, ImageSpec,
+use crate::{
+    models::{
+        Container, ContainerId, ContainerName, ContainerSpec, ContainerStatus, ImageId, ImageSpec,
+    },
+    services::ContainerBackend,
 };
-
-pub trait ContainerBackend {
-    fn image_exists(&mut self, name: &str) -> Result<bool>;
-
-    fn build_image(&mut self, image_spec: ImageSpec) -> Result<ImageId>;
-
-    fn list_containers(
-        &mut self,
-        labels: Vec<(&str, &str)>,
-    ) -> Result<Map<ContainerName, Container>>;
-
-    fn create_container(&mut self, container_spec: ContainerSpec) -> Result<ContainerId>;
-
-    fn start_container(&mut self, name: &str) -> Result<ContainerId>;
-
-    fn stop_container(&mut self, name: &str, timeout: u32) -> Result<ContainerId>;
-
-    fn remove_container(&mut self, name: &str, remove_volumes: bool) -> Result<ContainerId>;
-}
 
 pub struct PodmanBackend {
     client: VarlinkClient,
@@ -198,7 +182,9 @@ impl ContainerBackend for PodmanBackend {
     }
 
     fn create_container(&mut self, container_spec: ContainerSpec) -> Result<ContainerId> {
-        let labels = container_spec.labels.into_iter()
+        let labels = container_spec
+            .labels
+            .into_iter()
             .map(|(key, value)| format!("{}={}", key, value))
             .collect();
 

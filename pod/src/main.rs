@@ -6,16 +6,17 @@ use std::{
 };
 use structopt::StructOpt;
 
-use composer_frontend::{ComposerFrontend, DockerComposeFrontend};
-use container_backend::{ContainerBackend, PodmanBackend};
+use backends::PodmanBackend;
+use frontends::DockerComposeFrontend;
 use hasher::DigestHasher;
 use models::ContainerStatus;
+use services::{ComposerFrontend, ContainerBackend};
 
-mod composer_frontend;
-mod container_backend;
-mod docker_compose;
+mod backends;
+mod frontends;
 mod hasher;
 mod models;
+mod services;
 
 #[derive(Debug, StructOpt)]
 #[structopt(
@@ -118,9 +119,16 @@ fn main() -> Result<()> {
                 hasher.input(&container_spec);
                 let hash = hasher.finalize();
 
-                container_spec.labels.insert("io.podman.compose.project".into(), project_name.into());
-                container_spec.labels.insert("io.podman.compose.service".into(), container_spec.service_name.clone());
-                container_spec.labels.insert("io.podman.compose.hash".into(), hash.to_hex().to_string());
+                container_spec
+                    .labels
+                    .insert("io.podman.compose.project".into(), project_name.into());
+                container_spec.labels.insert(
+                    "io.podman.compose.service".into(),
+                    container_spec.service_name.clone(),
+                );
+                container_spec
+                    .labels
+                    .insert("io.podman.compose.hash".into(), hash.to_hex().to_string());
 
                 match current_container {
                     Some(container) => match container.status {

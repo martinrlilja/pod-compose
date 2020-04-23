@@ -40,3 +40,9 @@ pub struct ContainerSpec {
     pub image_name: String,
     pub labels: Map<String, String>,
 }
+
+#[derive(Clone, Debug, Default)]
+pub struct Composition {
+    pub images: Vec<ImageSpec>,
+    pub containers: Vec<ContainerSpec>,
+}
