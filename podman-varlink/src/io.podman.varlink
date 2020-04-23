@@ -127,12 +127,12 @@ type Container (
     createdat: string, # as RFC3339
     runningfor: string,
     status: string,
-    ports: []ContainerPortMappings,
+    ports: ?[]ContainerPortMappings,
     rootfssize: int,
     rwsize: int,
     names: string,
-    labels: [string]string,
-    mounts: []ContainerMount,
+    labels: ?[string]string,
+    mounts: ?[]ContainerMount,
     containerrunning: bool,
     namespaces: ContainerNameSpace
 )
@@ -573,7 +573,7 @@ method GetInfo() -> (info: PodmanInfo)
 
 # ListContainers returns information about all containers.
 # See also [GetContainer](#GetContainer).
-method ListContainers() -> (containers: []Container)
+method ListContainers() -> (containers: ?[]Container)
 
 method Ps(opts: PsOpts) -> (containers: []PsContainer)
 

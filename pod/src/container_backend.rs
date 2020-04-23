@@ -1,25 +1,34 @@
 use anyhow::{anyhow, Result};
 use ignore::WalkBuilder;
 use number_prefix::NumberPrefix;
-use std::fs::OpenOptions;
+use std::{collections::BTreeMap as Map, fs::OpenOptions};
 use tar::Builder as TarBuilder;
 use tempfile::TempDir;
 use varlink::Connection;
 
 use podman_varlink::{BuildInfo, Create as CreateContainer, VarlinkClient, VarlinkClientInterface};
 
-use crate::models::{ContainerId, ContainerSpec, ImageId, ImageSpec};
+use crate::models::{
+    Container, ContainerId, ContainerName, ContainerSpec, ContainerStatus, ImageId, ImageSpec,
+};
 
 pub trait ContainerBackend {
     fn image_exists(&mut self, name: &str) -> Result<bool>;
 
     fn build_image(&mut self, image_spec: ImageSpec) -> Result<ImageId>;
 
-    fn container_exists(&mut self, name: &str) -> Result<bool>;
+    fn list_containers(
+        &mut self,
+        labels: Vec<(&str, &str)>,
+    ) -> Result<Map<ContainerName, Container>>;
 
     fn create_container(&mut self, container_spec: ContainerSpec) -> Result<ContainerId>;
 
     fn start_container(&mut self, name: &str) -> Result<ContainerId>;
+
+    fn stop_container(&mut self, name: &str, timeout: u32) -> Result<ContainerId>;
+
+    fn remove_container(&mut self, name: &str, remove_volumes: bool) -> Result<ContainerId>;
 }
 
 pub struct PodmanBackend {
@@ -149,12 +158,50 @@ impl ContainerBackend for PodmanBackend {
         Ok(image)
     }
 
-    fn container_exists(&mut self, name: &str) -> Result<bool> {
-        let reply = self.client.container_exists(name.into()).call()?;
-        Ok(reply.exists == 0)
+    fn list_containers(
+        &mut self,
+        labels: Vec<(&str, &str)>,
+    ) -> Result<Map<ContainerName, Container>> {
+        let mut containers = Map::new();
+        let reply = self.client.list_containers().call()?;
+
+        let reply_containers = match reply.containers {
+            Some(containers) => containers,
+            None => return Ok(containers),
+        };
+
+        'container_loop: for container in reply_containers {
+            let container_labels = container.labels.unwrap_or_else(Default::default);
+            for (label, value) in labels.iter() {
+                let container_label_value = container_labels.get(*label).map(|s| s.as_str());
+                if container_label_value != Some(value) {
+                    continue 'container_loop;
+                }
+            }
+
+            let container_status = match container.status.as_str() {
+                "running" => ContainerStatus::Running,
+                "exited" => ContainerStatus::Exited,
+                _ => ContainerStatus::Unknown,
+            };
+
+            let container = Container {
+                id: ContainerId(container.id),
+                name: ContainerName(container.names),
+                status: container_status,
+                labels: container_labels.into_iter().collect(),
+            };
+            containers.insert(container.name.clone(), container);
+        }
+
+        Ok(containers)
     }
 
     fn create_container(&mut self, container_spec: ContainerSpec) -> Result<ContainerId> {
+        let labels = container_spec.labels.into_iter()
+            .map(|(key, value)| format!("{}={}", key, value))
+            .collect();
+
         let create_container = CreateContainer {
             args: vec![container_spec.image_name],
             addHost: Default::default(),
@@ -206,7 +253,7 @@ impl ContainerBackend for PodmanBackend {
             ip: Default::default(),
             ipc: Default::default(),
             kernelMemory: Default::default(),
-            label: Default::default(),
+            label: Some(labels),
             labelFile: Default::default(),
             logDriver: Default::default(),
             logOpt: Default::default(),
@@ -215,7 +262,7 @@ impl ContainerBackend for PodmanBackend {
             memoryReservation: Default::default(),
             memorySwap: Default::default(),
             memorySwappiness: Default::default(),
-            name: Some(container_spec.container_name),
+            name: Some(container_spec.container_name.0),
             network: Default::default(),
             noHosts: Default::default(),
             oomKillDisable: Default::default(),
@@ -265,6 +312,26 @@ impl ContainerBackend for PodmanBackend {
 
     fn start_container(&mut self, name: &str) -> Result<ContainerId> {
         let reply = self.client.start_container(name.to_owned()).call()?;
+        let container = ContainerId(reply.container);
+
+        Ok(container)
+    }
+
+    fn stop_container(&mut self, name: &str, timeout: u32) -> Result<ContainerId> {
+        let reply = self
+            .client
+            .stop_container(name.to_owned(), timeout as i64)
+            .call()?;
+        let container = ContainerId(reply.container);
+
+        Ok(container)
+    }
+
+    fn remove_container(&mut self, name: &str, remove_volumes: bool) -> Result<ContainerId> {
+        let reply = self
+            .client
+            .remove_container(name.to_owned(), false, remove_volumes)
+            .call()?;
         let container = ContainerId(reply.container);
 
         Ok(container)

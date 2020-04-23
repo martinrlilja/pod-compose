@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use blake3;
 use std::{
     env,
     path::{Path, PathBuf},
@@ -7,6 +8,8 @@ use structopt::StructOpt;
 
 use composer_frontend::{ComposerFrontend, DockerComposeFrontend};
 use container_backend::{ContainerBackend, PodmanBackend};
+use hasher::DigestHasher;
+use models::ContainerStatus;
 
 mod composer_frontend;
 mod container_backend;
@@ -28,6 +31,9 @@ enum Opt {
         #[structopt(short, long)]
         /// Also remove containers.
         volumes: bool,
+
+        #[structopt(long, default_value = "5")]
+        timeout: u32,
     },
     /// Finds a docker-compose.yaml file and starts the containers defined in it.
     Up {
@@ -38,6 +44,10 @@ enum Opt {
         #[structopt(long)]
         /// Build images before starting the containers.
         build: bool,
+    },
+    Stop {
+        #[structopt(long, default_value = "5")]
+        timeout: u32,
     },
 }
 
@@ -82,9 +92,14 @@ fn main() -> Result<()> {
 
     let mut backend = PodmanBackend::connect()?;
 
+    let containers = backend.list_containers(vec![("io.podman.compose.project", &project_name)])?;
+
     match opt {
         Opt::Build { pull: _ } => (),
-        Opt::Down { volumes: _ } => (),
+        Opt::Down {
+            volumes: _,
+            timeout: _,
+        } => (),
         Opt::Up { detach: _, build } => {
             for image_spec in composition.images {
                 if !build && backend.image_exists(&image_spec.image_name)? {
@@ -95,17 +110,51 @@ fn main() -> Result<()> {
                 backend.build_image(image_spec)?;
             }
 
-            for container_spec in composition.containers {
+            for mut container_spec in composition.containers {
                 let container_name = container_spec.container_name.clone();
-                let container_exists = backend.container_exists(&container_spec.container_name)?;
+                let current_container = containers.get(&container_name);
 
-                if !container_exists {
-                    println!("Creating container {}", container_name);
-                    backend.create_container(container_spec)?;
+                let mut hasher = blake3::Hasher::new();
+                hasher.input(&container_spec);
+                let hash = hasher.finalize();
+
+                container_spec.labels.insert("io.podman.compose.project".into(), project_name.into());
+                container_spec.labels.insert("io.podman.compose.service".into(), container_spec.service_name.clone());
+                container_spec.labels.insert("io.podman.compose.hash".into(), hash.to_hex().to_string());
+
+                match current_container {
+                    Some(container) => match container.status {
+                        ContainerStatus::Running => (),
+                        ContainerStatus::Exited => {
+                            println!("Starting container {}", container_name.0);
+                            backend.start_container(&container.id.0)?;
+                        }
+                        ContainerStatus::Unknown => {
+                            println!("Recreating container {}", container_name.0);
+                            backend.remove_container(&container.id.0, false)?;
+                            let container_id = backend.create_container(container_spec)?;
+                            backend.start_container(&container_id.0)?;
+                        }
+                    },
+                    None => {
+                        println!("Creating container {}", container_name.0);
+                        let container_id = backend.create_container(container_spec)?;
+                        backend.start_container(&container_id.0)?;
+                    }
                 }
+            }
+        }
+        Opt::Stop { timeout } => {
+            for container_spec in composition.containers {
+                let current_container = containers.get(&container_spec.container_name);
 
-                println!("Starting container {}", container_name);
-                backend.start_container(&container_name)?;
+                match current_container {
+                    Some(container) if container.status == ContainerStatus::Running => {
+                        println!("Stopping container {}...", &container_spec.container_name.0);
+                        backend.stop_container(&container.id.0, timeout)?;
+                    }
+                    _ => (),
+                }
             }
         }
     }

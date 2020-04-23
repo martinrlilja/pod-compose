@@ -9,8 +9,14 @@ pub struct DockerComposeFile {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Service {
+    pub replicas: Option<u64>,
+
     pub image: Option<String>,
+
     pub build: Option<Build>,
+
+    #[serde(default)]
+    pub ports: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::docker_compose::{Build, DockerComposeFile};
-use crate::models::{ContainerSpec, ImageSpec};
+use crate::models::{ContainerName, ContainerSpec, ImageSpec};
 
 #[derive(Clone, Debug, Default)]
 pub struct Composition {
@@ -80,12 +80,15 @@ impl ComposerFrontend for DockerComposeFrontend {
                 None => (),
             }
 
-            let container = ContainerSpec {
-                service_name: service_name.clone(),
-                image_name: image_name.clone(),
-                container_name: format!("{}_{}_1", project_name, service_name),
-            };
-            composition.containers.push(container);
+            for index in 0..service.replicas.unwrap_or(1) {
+                let container = ContainerSpec {
+                    service_name: service_name.clone(),
+                    image_name: image_name.clone(),
+                    container_name: ContainerName(format!("{}_{}_{}", project_name, service_name, index)),
+                    labels: Default::default(),
+                };
+                composition.containers.push(container);
+            }
         }
 
         Ok(composition)
