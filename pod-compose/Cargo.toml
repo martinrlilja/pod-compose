@@ -1,5 +1,5 @@
 [package]
-name = "pod"
+name = "pod-compose"
 version = "0.1.0"
 authors = ["Martin Risell Lilja <martin.risell.lilja@gmail.com>"]
 edition = "2018"
