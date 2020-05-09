@@ -68,7 +68,7 @@ type VolumeRemoveOpts (
 type Image (
   id: string,
   digest: string,
-  digests: []string,
+  digests: ?[]string,
   parentId: string,
   repoTags: []string,
   repoDigests: []string,
@@ -76,7 +76,7 @@ type Image (
   size: int,
   virtualSize: int,
   containers: int,
-  labels: [string]string,
+  labels: ?[string]string,
   isParent: bool,
   topLayer: string,
   readOnly: bool,
@@ -110,8 +110,8 @@ type ImageSearchFilter (
 )
 
 type AuthConfig (
-    username: string,
-    password: string
+    username: ?string,
+    password: ?string
 )
 
 type KubePodService (
@@ -455,7 +455,7 @@ type BuildInfo (
 
 # MoreResponse is a struct for when responses from varlink requires longer output
 type MoreResponse (
-    logs: []string,
+    logs: ?[]string,
     id: string
 )
 

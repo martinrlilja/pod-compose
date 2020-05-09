@@ -4,4 +4,4 @@ services:
     build:
       context: .
   redis:
-    image: redis
+    image: redis:5-alpine

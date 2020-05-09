@@ -1,18 +1,25 @@
 use anyhow::{anyhow, Result};
-use blake3;
+use crossterm::{
+    cursor,
+    style::{self, Colorize, Styler},
+    QueueableCommand,
+};
+use log::info;
 use std::{
     env,
+    io::{stdout, Write},
     path::{Path, PathBuf},
 };
 use structopt::StructOpt;
 
 use backends::PodmanBackend;
+use controller::{ContainerOperation, Controller};
 use frontends::DockerComposeFrontend;
-use hasher::DigestHasher;
-use models::ContainerStatus;
-use services::{ComposerFrontend, ContainerBackend};
+use models::{ContainerName, PullPolicy};
+use services::ComposerFrontend;
 
 mod backends;
+mod controller;
 mod frontends;
 mod hasher;
 mod models;
@@ -35,6 +42,9 @@ enum Opt {
 
         #[structopt(long, default_value = "5")]
         timeout: u32,
+
+        #[structopt(long)]
+        remove_orphans: bool,
     },
     /// Finds a docker-compose.yaml file and starts the containers defined in it.
     Up {
@@ -45,10 +55,19 @@ enum Opt {
         #[structopt(long)]
         /// Build images before starting the containers.
         build: bool,
+
+        #[structopt(long, default_value = "5")]
+        timeout: u32,
+
+        #[structopt(long)]
+        remove_orphans: bool,
     },
     Stop {
         #[structopt(long, default_value = "5")]
         timeout: u32,
+
+        #[structopt(long)]
+        remove_orphans: bool,
     },
 }
 
@@ -69,17 +88,23 @@ fn find_compose_file<P: AsRef<Path>>(path: P) -> Option<PathBuf> {
 }
 
 fn main() -> Result<()> {
+    pretty_env_logger::init_custom_env("LOG");
+
     let opt = Opt::from_args();
+
+    let mut stdout = stdout();
 
     let current_dir = env::current_dir()?;
     let compose_file_path = find_compose_file(current_dir);
 
     let compose_file_path = compose_file_path
         .ok_or_else(|| anyhow!("Couldn't find a docker-compose.yml file in the current working directory or any of its parents."))?;
+    info!("found compose file {:?}", compose_file_path);
 
     let work_directory = compose_file_path
         .parent()
         .ok_or_else(|| anyhow!("Docker compose file has no parent."))?;
+    info!("found work directory {:?}", work_directory);
 
     env::set_current_dir(work_directory)?;
 
@@ -87,83 +112,132 @@ fn main() -> Result<()> {
         .file_name()
         .and_then(|path| path.to_str())
         .ok_or_else(|| anyhow!("Couldn't determine the project name."))?;
+    info!("project name {:?}", project_name);
 
     let mut frontend = DockerComposeFrontend::new();
-    let composition = frontend.composition(project_name, &compose_file_path)?;
+    let composition = frontend.composition(project_name, compose_file_path.as_path())?;
+    info!("parsed composition");
 
-    let mut backend = PodmanBackend::connect()?;
+    let backend = PodmanBackend::connect()?;
+    info!("connected to podman");
 
-    let containers = backend.list_containers(vec![("io.podman.compose.project", &project_name)])?;
+    let mut controller = Controller::init(project_name, backend, composition)?;
+    info!("created controller");
 
     match opt {
         Opt::Build { pull: _ } => (),
         Opt::Down {
             volumes: _,
-            timeout: _,
-        } => (),
-        Opt::Up { detach: _, build } => {
-            for image_spec in composition.images {
-                if !build && backend.image_exists(&image_spec.image_name)? {
-                    continue;
-                }
+            timeout,
+            remove_orphans,
+        } => {
+            check_orphans(&mut controller, &mut stdout, remove_orphans, timeout)?;
 
-                println!("Building image {}", image_spec.image_name);
-                backend.build_image(image_spec)?;
-            }
-
-            for mut container_spec in composition.containers {
-                let container_name = container_spec.container_name.clone();
-                let current_container = containers.get(&container_name);
-
-                let mut hasher = blake3::Hasher::new();
-                hasher.input(&container_spec);
-                let hash = hasher.finalize();
-
-                container_spec
-                    .labels
-                    .insert("io.podman.compose.project".into(), project_name.into());
-                container_spec.labels.insert(
-                    "io.podman.compose.service".into(),
-                    container_spec.service_name.clone(),
-                );
-                container_spec
-                    .labels
-                    .insert("io.podman.compose.hash".into(), hash.to_hex().to_string());
-
-                match current_container {
-                    Some(container) => match container.status {
-                        ContainerStatus::Running => (),
-                        ContainerStatus::Exited => {
-                            println!("Starting container {}", container_name.0);
-                            backend.start_container(&container.id.0)?;
-                        }
-                        ContainerStatus::Unknown => {
-                            println!("Recreating container {}", container_name.0);
-                            backend.remove_container(&container.id.0, false)?;
-                            let container_id = backend.create_container(container_spec)?;
-                            backend.start_container(&container_id.0)?;
-                        }
-                    },
-                    None => {
-                        println!("Creating container {}", container_name.0);
-                        let container_id = backend.create_container(container_spec)?;
-                        backend.start_container(&container_id.0)?;
-                    }
-                }
-            }
+            let diff = controller.remove_containers_diff()?;
+            container_apply(&mut controller, &mut stdout, diff, timeout)?;
         }
-        Opt::Stop { timeout } => {
-            for container_spec in composition.containers {
-                let current_container = containers.get(&container_spec.container_name);
+        Opt::Up {
+            detach: _,
+            build: _,
+            timeout,
+            remove_orphans,
+        } => {
+            check_orphans(&mut controller, &mut stdout, remove_orphans, timeout)?;
 
-                match current_container {
-                    Some(container) if container.status == ContainerStatus::Running => {
-                        println!("Stopping container {}...", &container_spec.container_name.0);
-                        backend.stop_container(&container.id.0, timeout)?;
-                    }
-                    _ => (),
-                }
-            }
+            controller.pull_images(PullPolicy::IfNotPresent)?;
+
+            let diff = controller.start_containers_diff()?;
+            container_apply(&mut controller, &mut stdout, diff, timeout)?;
+        }
+        Opt::Stop {
+            timeout,
+            remove_orphans,
+        } => {
+            check_orphans(&mut controller, &mut stdout, remove_orphans, timeout)?;
+
+            let diff = controller.stop_containers_diff()?;
+            container_apply(&mut controller, &mut stdout, diff, timeout)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Looks for orphans, if there are any and `remove_orphans` is set to true
+/// they will be removed. Otherwise a message will be printed.
+fn check_orphans(
+    controller: &mut Controller,
+    stdout: &mut impl Write,
+    remove_orphans: bool,
+    timeout: u32,
+) -> Result<()> {
+    let orphans = controller.find_orphans()?;
+
+    if !orphans.is_empty() {
+        if remove_orphans {
+            let diff = orphans.into_iter().map(|name| (name, ContainerOperation::Remove)).collect();
+            container_apply(controller, stdout, diff, timeout)?;
+        } else {
+            stdout
+                .queue(style::PrintStyledContent("INFO: ".cyan().bold()))?
+                .queue(style::Print(
+                    "found orphans, rerun with --remove-orphans to remove them.\n",
+                ))?
+                .flush()?;
+        }
+    } else {
+        info!("found no orphans");
+    }
+
+    Ok(())
+}
+
+fn container_apply(
+    controller: &mut Controller,
+    stdout: &mut impl Write,
+    operations: Vec<(ContainerName, ContainerOperation)>,
+    timeout: u32,
+) -> Result<()> {
+    fn operation_verb(operation: ContainerOperation) -> Option<&'static str> {
+        match operation {
+            ContainerOperation::Nothing => None,
+            ContainerOperation::Create => Some("Creating"),
+            ContainerOperation::Recreate => Some("Recreating"),
+            ContainerOperation::Start => Some("Starting"),
+            ContainerOperation::Stop => Some("Stopping"),
+            ContainerOperation::Remove => Some("Removing"),
+        }
+    }
+
+    let lines = operations
+        .iter()
+        .filter_map(|(container_name, operation)| {
+            operation_verb(*operation).map(|verb| format!("{} {}", verb, container_name.0))
+        })
+        .collect::<Vec<_>>();
+
+    let longest_line = lines.iter().map(|line| line.len()).max().unwrap_or(0);
+
+    for line in lines.iter() {
+        stdout.queue(style::Print(line))?;
+
+        let padding = longest_line - line.len() + 1;
+        stdout.queue(cursor::MoveRight(padding as u16))?
+            .queue(style::Print("...\n"))?;
+    }
+
+    stdout.flush()?;
+
+    for (line, (container_name, operation)) in operations.into_iter().enumerate() {
+        controller.container_apply(&container_name, operation, timeout)?;
+
+        if operation != ContainerOperation::Nothing {
+            stdout.queue(cursor::SavePosition)?
+                .queue(cursor::MoveToPreviousLine((lines.len() - line) as u16))?
+                .queue(cursor::MoveRight(longest_line as u16 + 5))?
+                .queue(style::PrintStyledContent("done".green().bold()))?
+                .queue(cursor::RestorePosition)?
+                .flush()?;
         }
     }
 

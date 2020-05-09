@@ -3,3 +3,6 @@ members = [
     "pod-compose",
     "podman-varlink",
 ]
+
+[profile.release]
+lto = true

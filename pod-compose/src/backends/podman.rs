@@ -6,11 +6,15 @@ use tar::Builder as TarBuilder;
 use tempfile::TempDir;
 use varlink::Connection;
 
-use podman_varlink::{BuildInfo, Create as CreateContainer, VarlinkClient, VarlinkClientInterface};
+use podman_varlink::{
+    AuthConfig, BuildInfo, Create as CreateContainer, VarlinkClient, VarlinkClientInterface,
+    ErrorKind, Error
+};
 
 use crate::{
     models::{
-        Container, ContainerId, ContainerName, ContainerSpec, ContainerStatus, ImageId, ImageSpec,
+        Container, ContainerId, ContainerName, ContainerSpec, ContainerStatus, Image,
+        ImageBuildSpec, ImageId, ImageName,
     },
     services::ContainerBackend,
 };
@@ -29,14 +33,55 @@ impl PodmanBackend {
 }
 
 impl ContainerBackend for PodmanBackend {
-    fn image_exists(&mut self, name: &str) -> Result<bool> {
-        let reply = self.client.image_exists(name.into()).call()?;
-        Ok(reply.exists == 0)
+    fn get_image(&mut self, name: &ImageName) -> Result<Option<Image>> {
+        let reply = self.client.get_image(name.0.clone()).call();
+
+        let reply = match reply {
+            Ok(reply) => reply,
+            Err(Error(ErrorKind::ImageNotFound(_), _, _)) => return Ok(None),
+            Err(err) => Err(err)?,
+        };
+
+        let labels = reply.image
+            .labels
+            .map(|labels| labels.into_iter().collect())
+            .unwrap_or_else(Default::default);
+
+        Ok(Some(Image {
+            id: ImageId(reply.image.id),
+            labels,
+        }))
     }
 
-    fn build_image(&mut self, image_spec: ImageSpec) -> Result<ImageId> {
-        println!("{:?}", image_spec);
+    fn pull_image(&mut self, name: &ImageName) -> Result<ImageId> {
+        let auth_config = AuthConfig {
+            username: None,
+            password: None,
+        };
 
+        let mut image_id = None;
+
+        for reply in self.client.pull_image(name.0.clone(), auth_config).more()? {
+            let reply = reply?.reply;
+
+            if let Some(logs) = reply.logs {
+                if !logs.is_empty() {
+                    for line in logs {
+                        print!("{}", line);
+                    }
+                }
+            }
+
+            if !reply.id.is_empty() {
+                image_id = Some(reply.id);
+            }
+        }
+
+        let image_id = ImageId(image_id.unwrap());
+        Ok(image_id)
+    }
+
+    fn build_image(&mut self, spec: ImageBuildSpec) -> Result<ImageId> {
         let temp_dir = TempDir::new()?;
         let temp_context_path = temp_dir.path().join("context.tar");
         let temp_context = {
@@ -50,7 +95,7 @@ impl ContainerBackend for PodmanBackend {
         };
 
         let mut tar = TarBuilder::new(temp_context);
-        let walk = WalkBuilder::new(image_spec.context)
+        let walk = WalkBuilder::new(spec.context)
             .add_custom_ignore_filename(".dockerignore")
             .ignore(false)
             .git_global(false)
@@ -79,7 +124,7 @@ impl ContainerBackend for PodmanBackend {
             .to_str()
             .ok_or_else(|| anyhow!("the canonical context path is not valid utf-8"))?;
 
-        let dockerfile = image_spec.dockerfile.canonicalize()?;
+        let dockerfile = spec.dockerfile.canonicalize()?;
         let dockerfile = dockerfile
             .to_str()
             .ok_or_else(|| anyhow!("the canonical dockerfile path is not valid utf-8"))?;
@@ -107,7 +152,7 @@ impl ContainerBackend for PodmanBackend {
             nocache: Some(false),
             os: None,
             out: None,
-            output: image_spec.image_name,
+            output: spec.name.0,
             outputFormat: None,
             pullPolicy: None,
             quiet: None,
@@ -116,7 +161,7 @@ impl ContainerBackend for PodmanBackend {
             runtimeArgs: None,
             signBy: None,
             squash: None,
-            target: image_spec.target,
+            target: spec.target,
             transientMounts: None,
         };
 
@@ -125,9 +170,11 @@ impl ContainerBackend for PodmanBackend {
         for reply in self.client.build_image(build_info).more()? {
             let reply = reply?;
 
-            if !reply.image.logs.is_empty() {
-                for line in reply.image.logs {
-                    print!("{}", line);
+            if let Some(logs) = reply.image.logs {
+                if !logs.is_empty() {
+                    for line in logs {
+                        print!("{}", line);
+                    }
                 }
             }
 
@@ -147,6 +194,7 @@ impl ContainerBackend for PodmanBackend {
         labels: Vec<(&str, &str)>,
     ) -> Result<Map<ContainerName, Container>> {
         let mut containers = Map::new();
+
         let reply = self.client.list_containers().call()?;
 
         let reply_containers = match reply.containers {
@@ -164,9 +212,13 @@ impl ContainerBackend for PodmanBackend {
             }
 
             let container_status = match container.status.as_str() {
+                "configured" => ContainerStatus::Configured,
                 "running" => ContainerStatus::Running,
                 "exited" => ContainerStatus::Exited,
-                _ => ContainerStatus::Unknown,
+                status => {
+                    eprintln!("Unknown container status: {:?}", status);
+                    ContainerStatus::Unknown
+                }
             };
 
             let container = Container {
@@ -181,15 +233,15 @@ impl ContainerBackend for PodmanBackend {
         Ok(containers)
     }
 
-    fn create_container(&mut self, container_spec: ContainerSpec) -> Result<ContainerId> {
-        let labels = container_spec
+    fn create_container(&mut self, spec: ContainerSpec) -> Result<ContainerId> {
+        let labels = spec
             .labels
             .into_iter()
             .map(|(key, value)| format!("{}={}", key, value))
             .collect();
 
         let create_container = CreateContainer {
-            args: vec![container_spec.image_name],
+            args: vec![spec.image_name.0],
             addHost: Default::default(),
             annotation: Default::default(),
             attach: Default::default(),
@@ -248,7 +300,7 @@ impl ContainerBackend for PodmanBackend {
             memoryReservation: Default::default(),
             memorySwap: Default::default(),
             memorySwappiness: Default::default(),
-            name: Some(container_spec.container_name.0),
+            name: Some(spec.name.0),
             network: Default::default(),
             noHosts: Default::default(),
             oomKillDisable: Default::default(),

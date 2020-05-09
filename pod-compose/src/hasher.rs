@@ -1,6 +1,8 @@
 use blake3;
 use std::hash::{Hash, Hasher};
 
+/// An interface for using `std::hash::Hash` with hashers with larger outputs
+/// such as `blake3`.
 pub trait DigestHasher {
     fn input<I: Hash>(&mut self, input: I);
 }

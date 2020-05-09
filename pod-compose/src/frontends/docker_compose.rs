@@ -8,7 +8,7 @@ use std::{
 };
 
 use crate::{
-    models::{Composition, ContainerName, ContainerSpec, ImageSpec},
+    models::{Composition, ContainerName, ContainerSpec, ImageBuildSpec, ImageName, ImagePullSpec},
     services::ComposerFrontend,
 };
 
@@ -96,12 +96,7 @@ impl DockerComposeFrontend {
 }
 
 impl ComposerFrontend for DockerComposeFrontend {
-    fn composition<P: AsRef<Path>>(
-        &mut self,
-        project_name: &str,
-        compose_file_path: P,
-    ) -> Result<Composition> {
-        let compose_file_path = compose_file_path.as_ref();
+    fn composition(&mut self, project_name: &str, compose_file_path: &Path) -> Result<Composition> {
         let compose_file = File::open(&compose_file_path)?;
 
         let file: DockerComposeFile = serde_yaml::from_reader(compose_file)?;
@@ -109,20 +104,21 @@ impl ComposerFrontend for DockerComposeFrontend {
 
         for (service_name, service) in file.services {
             let image_name = match service.image {
-                Some(image_name) => image_name,
-                None => format!("{}_{}", project_name, service_name),
+                Some(image_name) => ImageName(image_name),
+                None => ImageName(format!("{}_{}", project_name, service_name)),
             };
 
             match service.build {
                 Some(Build::Short(context)) => {
-                    let image_spec = ImageSpec {
+                    let image_spec = ImageBuildSpec {
+                        name: image_name.clone(),
                         context: PathBuf::from(context),
                         dockerfile: PathBuf::from("Dockerfile"),
                         target: None,
                         build_args: Default::default(),
-                        image_name: image_name.clone(),
+                        labels: Default::default(),
                     };
-                    composition.images.push(image_spec);
+                    composition.build_images.push(image_spec);
                 }
                 Some(Build::Extended {
                     context,
@@ -131,28 +127,31 @@ impl ComposerFrontend for DockerComposeFrontend {
                     target,
                     ..
                 }) => {
-                    let image_spec = ImageSpec {
+                    let image_spec = ImageBuildSpec {
+                        name: image_name.clone(),
                         context: PathBuf::from(context),
                         dockerfile: PathBuf::from(
                             dockerfile.unwrap_or_else(|| "Dockerfile".into()),
                         ),
                         target: target,
                         build_args: args.to_map(),
-                        image_name: image_name.clone(),
+                        labels: Default::default(),
                     };
-                    composition.images.push(image_spec);
+                    composition.build_images.push(image_spec);
                 }
-                None => (),
+                None => {
+                    let image_spec = ImagePullSpec {
+                        name: image_name.clone(),
+                    };
+                    composition.pull_images.push(image_spec);
+                }
             }
 
             for index in 0..service.replicas.unwrap_or(1) {
                 let container = ContainerSpec {
                     service_name: service_name.clone(),
                     image_name: image_name.clone(),
-                    container_name: ContainerName(format!(
-                        "{}_{}_{}",
-                        project_name, service_name, index
-                    )),
+                    name: ContainerName(format!("{}_{}_{}", project_name, service_name, index)),
                     labels: Default::default(),
                 };
                 composition.containers.push(container);
