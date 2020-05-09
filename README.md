@@ -6,7 +6,7 @@
 
 With rust and cargo installed:
 
-```
+```sh
 $ cargo install --git https://github.com/martinrlilja/pod-compose.git pod-compose
 ```
 
@@ -15,11 +15,20 @@ easiest/best way to install it. Your OS's package manager might also have it.
 
 ## Features
 
-This is a very barebones implementation of docker-compose for podman. At this
-point it's probably easier to specify what it supports rather than what it does
-not.
+This is a very barebones implementation of docker-compose for podman. Very few
+features are supported at this point, if you want to know if a feature is
+supported, the answer is probably no. That said - contributions are welcome!
 
- * `up -d`, currently does not build images, or support non-detached mode.
+### Commands
+
+ * `up -d`, currently does not build images, or support non-detached mode, but
+    it will recreate your containers if something changes.
  * `stop`
  * `down`
  * `--remove-orphans`
+
+### docker-compose.yml
+
+ * Looks for your docker-compose.yml file recursively up the file hierarchy.
+ * `build`, `image`
+ * `replicas`

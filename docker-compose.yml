@@ -5,4 +5,5 @@ services:
     build:
       context: .
   redis:
+    replicas: 1
     image: redis:5-alpine
