@@ -175,7 +175,10 @@ fn check_orphans(
 
     if !orphans.is_empty() {
         if remove_orphans {
-            let diff = orphans.into_iter().map(|name| (name, ContainerOperation::Remove)).collect();
+            let diff = orphans
+                .into_iter()
+                .map(|name| (name, ContainerOperation::Remove))
+                .collect();
             container_apply(controller, stdout, diff, timeout)?;
         } else {
             stdout
@@ -198,21 +201,21 @@ fn container_apply(
     operations: Vec<(ContainerName, ContainerOperation)>,
     timeout: u32,
 ) -> Result<()> {
-    fn operation_verb(operation: ContainerOperation) -> Option<&'static str> {
+    fn operation_verb(operation: ContainerOperation) -> &'static str {
         match operation {
-            ContainerOperation::Nothing => None,
-            ContainerOperation::Create => Some("Creating"),
-            ContainerOperation::Recreate => Some("Recreating"),
-            ContainerOperation::Start => Some("Starting"),
-            ContainerOperation::Stop => Some("Stopping"),
-            ContainerOperation::Remove => Some("Removing"),
+            ContainerOperation::Create => "Creating",
+            ContainerOperation::Recreate => "Recreating",
+            ContainerOperation::Start => "Starting",
+            ContainerOperation::Stop => "Stopping",
+            ContainerOperation::Remove => "Removing",
         }
     }
 
     let lines = operations
         .iter()
-        .filter_map(|(container_name, operation)| {
-            operation_verb(*operation).map(|verb| format!("{} {}", verb, container_name.0))
+        .map(|(container_name, operation)| {
+            let verb = operation_verb(*operation);
+            format!("{} {}", verb, container_name.0)
         })
         .collect::<Vec<_>>();
 
@@ -222,7 +225,8 @@ fn container_apply(
         stdout.queue(style::Print(line))?;
 
         let padding = longest_line - line.len() + 1;
-        stdout.queue(cursor::MoveRight(padding as u16))?
+        stdout
+            .queue(cursor::MoveRight(padding as u16))?
             .queue(style::Print("...\n"))?;
     }
 
@@ -231,14 +235,13 @@ fn container_apply(
     for (line, (container_name, operation)) in operations.into_iter().enumerate() {
         controller.container_apply(&container_name, operation, timeout)?;
 
-        if operation != ContainerOperation::Nothing {
-            stdout.queue(cursor::SavePosition)?
-                .queue(cursor::MoveToPreviousLine((lines.len() - line) as u16))?
-                .queue(cursor::MoveRight(longest_line as u16 + 5))?
-                .queue(style::PrintStyledContent("done".green().bold()))?
-                .queue(cursor::RestorePosition)?
-                .flush()?;
-        }
+        stdout
+            .queue(cursor::SavePosition)?
+            .queue(cursor::MoveToPreviousLine((lines.len() - line) as u16))?
+            .queue(cursor::MoveRight(longest_line as u16 + 5))?
+            .queue(style::PrintStyledContent("done".green().bold()))?
+            .queue(cursor::RestorePosition)?
+            .flush()?;
     }
 
     Ok(())

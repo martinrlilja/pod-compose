@@ -7,8 +7,8 @@ use tempfile::TempDir;
 use varlink::Connection;
 
 use podman_varlink::{
-    AuthConfig, BuildInfo, Create as CreateContainer, VarlinkClient, VarlinkClientInterface,
-    ErrorKind, Error
+    AuthConfig, BuildInfo, Create as CreateContainer, Error, ErrorKind, VarlinkClient,
+    VarlinkClientInterface,
 };
 
 use crate::{
@@ -42,7 +42,8 @@ impl ContainerBackend for PodmanBackend {
             Err(err) => Err(err)?,
         };
 
-        let labels = reply.image
+        let labels = reply
+            .image
             .labels
             .map(|labels| labels.into_iter().collect())
             .unwrap_or_else(Default::default);

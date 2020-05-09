@@ -18,7 +18,6 @@ const LABEL_HASH: &str = "io.podman.compose.hash";
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ContainerOperation {
-    Nothing,
     Create,
     Recreate,
     Start,
@@ -82,14 +81,13 @@ impl Controller {
         let orphans = self
             .containers
             .iter()
-            .filter(|(_name, container)| {
+            .filter_map(|(container_name, container)| {
                 let service = container.labels.get(LABEL_SERVICE);
                 match service {
-                    Some(service) if services.contains(service) => false,
-                    _ => true,
+                    Some(service) if services.contains(service) => None,
+                    _ => Some(container_name.clone()),
                 }
             })
-            .map(|(name, _container)| name.clone())
             .collect();
 
         info!("found orphans: {:?}", orphans);
@@ -98,38 +96,65 @@ impl Controller {
     }
 
     pub fn start_containers_diff(&mut self) -> Result<Vec<(ContainerName, ContainerOperation)>> {
-        let diff = self
+        let diff = self.composition.containers.iter().filter_map(|spec| {
+            let mut hasher = blake3::Hasher::new();
+            hasher.input(&spec);
+            let spec_hash = hasher.finalize();
+
+            let container = match self.containers.get(&spec.name) {
+                Some(container) => container,
+                None => return Some((spec.name.clone(), ContainerOperation::Create)),
+            };
+
+            let container_hash = container.labels.get(LABEL_HASH);
+            if container_hash
+                .map(|h| h == spec_hash.to_hex().as_str())
+                .unwrap_or(false)
+            {
+                let operation = match container.status {
+                    ContainerStatus::Configured => Some(ContainerOperation::Start),
+                    ContainerStatus::Running => None,
+                    ContainerStatus::Exited => Some(ContainerOperation::Start),
+                    ContainerStatus::Unknown => Some(ContainerOperation::Recreate),
+                };
+
+                operation.map(|operation| (spec.name.clone(), operation))
+            } else {
+                Some((spec.name.clone(), ContainerOperation::Recreate))
+            }
+        });
+
+        let services = self
             .composition
             .containers
             .iter()
-            .map(|spec| {
-                let mut hasher = blake3::Hasher::new();
-                hasher.input(&spec);
-                let spec_hash = hasher.finalize();
+            .map(|spec| spec.service_name.clone())
+            .collect::<Set<_>>();
 
-                let container = match self.containers.get(&spec.name) {
-                    Some(container) => container,
-                    None => return (spec.name.clone(), ContainerOperation::Create),
-                };
+        // If the user scales down any service, we need to find the old
+        // containers and remove them. Making sure we don't also remove
+        // orphans.
+        let scaled_down_containers =
+            self.containers
+                .iter()
+                .filter_map(|(container_name, container)| {
+                    let container_should_exist = self
+                        .composition
+                        .containers
+                        .iter()
+                        .find(|container_spec| container_spec.name == *container_name)
+                        .is_some();
 
-                let container_hash = container.labels.get(LABEL_HASH);
-                if container_hash
-                    .map(|h| h == spec_hash.to_hex().as_str())
-                    .unwrap_or(false)
-                {
-                    let operation = match container.status {
-                        ContainerStatus::Configured => ContainerOperation::Start,
-                        ContainerStatus::Running => ContainerOperation::Nothing,
-                        ContainerStatus::Exited => ContainerOperation::Start,
-                        ContainerStatus::Unknown => ContainerOperation::Recreate,
-                    };
+                    let service = container.labels.get(LABEL_SERVICE);
+                    match service {
+                        Some(service) if services.contains(service) && !container_should_exist => {
+                            Some((container_name.clone(), ContainerOperation::Remove))
+                        }
+                        _ => None,
+                    }
+                });
 
-                    (spec.name.clone(), operation)
-                } else {
-                    (spec.name.clone(), ContainerOperation::Recreate)
-                }
-            })
-            .collect();
+        let diff = diff.chain(scaled_down_containers).collect();
 
         Ok(diff)
     }
@@ -139,11 +164,11 @@ impl Controller {
             .composition
             .containers
             .iter()
-            .map(|spec| match self.containers.get(&spec.name) {
+            .filter_map(|spec| match self.containers.get(&spec.name) {
                 Some(container) if container.status == ContainerStatus::Running => {
-                    (spec.name.clone(), ContainerOperation::Stop)
+                    Some((spec.name.clone(), ContainerOperation::Stop))
                 }
-                _ => (spec.name.clone(), ContainerOperation::Nothing),
+                _ => None,
             })
             .collect();
 
@@ -155,9 +180,9 @@ impl Controller {
             .composition
             .containers
             .iter()
-            .map(|spec| match self.containers.get(&spec.name) {
-                Some(_container) => (spec.name.clone(), ContainerOperation::Remove),
-                _ => (spec.name.clone(), ContainerOperation::Nothing),
+            .filter_map(|spec| match self.containers.get(&spec.name) {
+                Some(_container) => Some((spec.name.clone(), ContainerOperation::Remove)),
+                _ => None,
             })
             .collect();
 
@@ -180,7 +205,6 @@ impl Controller {
         };
 
         match operation {
-            ContainerOperation::Nothing => (),
             ContainerOperation::Create => {
                 let container_spec = container_spec()?;
                 let container_id = self.container_create(container_spec)?;
