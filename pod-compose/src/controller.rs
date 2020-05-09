@@ -6,8 +6,8 @@ use std::collections::{BTreeMap as Map, BTreeSet as Set};
 use crate::{
     hasher::DigestHasher,
     models::{
-        Composition, Container, ContainerId, ContainerName, ContainerSpec, ContainerStatus,
-        PullPolicy,
+        BuildPolicy, Composition, Container, ContainerId, ContainerName, ContainerSpec,
+        ContainerStatus, PullPolicy,
     },
     services::ContainerBackend,
 };
@@ -57,6 +57,46 @@ impl Controller {
             match (pull_policy, image) {
                 (PullPolicy::IfNotPresent, None) | (PullPolicy::Always, _) => {
                     self.backend.pull_image(&image_spec.name)?;
+                }
+                _ => (),
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn build_images(
+        &mut self,
+        build_policy: BuildPolicy,
+        pull_policy: PullPolicy,
+    ) -> Result<()> {
+        for image_spec in self.composition.build_images.iter() {
+            let mut hasher = blake3::Hasher::new();
+            hasher.input(&image_spec);
+            let spec_hash = hasher.finalize();
+            let spec_hash = spec_hash.to_hex();
+            let spec_hash = spec_hash.as_str();
+
+            let hash_matches = self
+                .backend
+                .get_image(&image_spec.name)?
+                .and_then(|image| {
+                    image
+                        .labels
+                        .get(LABEL_HASH)
+                        .map(|image_hash| image_hash == spec_hash)
+                })
+                .unwrap_or(false);
+
+            match (build_policy, hash_matches) {
+                (BuildPolicy::Always, _) | (BuildPolicy::IfChanged, false) => {
+                    let mut image_spec = image_spec.clone();
+
+                    image_spec
+                        .labels
+                        .insert(LABEL_HASH.into(), spec_hash.into());
+
+                    self.backend.build_image(&image_spec, pull_policy)?;
                 }
                 _ => (),
             }

@@ -14,7 +14,7 @@ use podman_varlink::{
 use crate::{
     models::{
         Container, ContainerId, ContainerName, ContainerSpec, ContainerStatus, Image,
-        ImageBuildSpec, ImageId, ImageName,
+        ImageBuildSpec, ImageId, ImageName, PullPolicy,
     },
     services::ContainerBackend,
 };
@@ -82,7 +82,7 @@ impl ContainerBackend for PodmanBackend {
         Ok(image_id)
     }
 
-    fn build_image(&mut self, spec: ImageBuildSpec) -> Result<ImageId> {
+    fn build_image(&mut self, spec: &ImageBuildSpec, pull_policy: PullPolicy) -> Result<ImageId> {
         let temp_dir = TempDir::new()?;
         let temp_context_path = temp_dir.path().join("context.tar");
         let temp_context = {
@@ -96,7 +96,7 @@ impl ContainerBackend for PodmanBackend {
         };
 
         let mut tar = TarBuilder::new(temp_context);
-        let walk = WalkBuilder::new(spec.context)
+        let walk = WalkBuilder::new(&spec.context)
             .add_custom_ignore_filename(".dockerignore")
             .ignore(false)
             .git_global(false)
@@ -130,6 +130,18 @@ impl ContainerBackend for PodmanBackend {
             .to_str()
             .ok_or_else(|| anyhow!("the canonical dockerfile path is not valid utf-8"))?;
 
+        let labels = spec
+            .labels
+            .iter()
+            .map(|(key, value)| format!("{}={}", key, value))
+            .collect();
+
+        // TODO: are these values really correct?
+        let pull_policy = match pull_policy {
+            PullPolicy::IfNotPresent => "IfNotPresent",
+            PullPolicy::Always => "Always",
+        };
+
         let build_info = BuildInfo {
             architecture: None,
             addCapabilities: None,
@@ -148,21 +160,21 @@ impl ContainerBackend for PodmanBackend {
             err: None,
             forceRmIntermediateCtrs: None,
             iidfile: None,
-            label: None,
+            label: Some(labels),
             layers: None,
             nocache: Some(false),
             os: None,
             out: None,
-            output: spec.name.0,
+            output: spec.name.0.clone(),
             outputFormat: None,
-            pullPolicy: None,
+            pullPolicy: Some(pull_policy.into()),
             quiet: None,
             remoteIntermediateCtrs: None,
             reportWriter: None,
             runtimeArgs: None,
             signBy: None,
             squash: None,
-            target: spec.target,
+            target: spec.target.clone(),
             transientMounts: None,
         };
 
@@ -237,7 +249,7 @@ impl ContainerBackend for PodmanBackend {
     fn create_container(&mut self, spec: ContainerSpec) -> Result<ContainerId> {
         let labels = spec
             .labels
-            .into_iter()
+            .iter()
             .map(|(key, value)| format!("{}={}", key, value))
             .collect();
 
@@ -310,7 +322,7 @@ impl ContainerBackend for PodmanBackend {
             overrideOS: Default::default(),
             pid: Default::default(),
             pidsLimit: Default::default(),
-            pod: Default::default(),
+            pod: None,
             privileged: Default::default(),
             publish: Default::default(),
             publishAll: Default::default(),

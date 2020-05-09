@@ -15,7 +15,7 @@ use structopt::StructOpt;
 use backends::PodmanBackend;
 use controller::{ContainerOperation, Controller};
 use frontends::DockerComposeFrontend;
-use models::{ContainerName, PullPolicy};
+use models::{BuildPolicy, ContainerName, PullPolicy};
 use services::ComposerFrontend;
 
 mod backends;
@@ -27,7 +27,7 @@ mod services;
 
 #[derive(Debug, StructOpt)]
 #[structopt(
-    name = "pod",
+    name = "pod-compose",
     about = "A docker-compose compatible tool for running containers with podman."
 )]
 enum Opt {
@@ -125,7 +125,15 @@ fn main() -> Result<()> {
     info!("created controller");
 
     match opt {
-        Opt::Build { pull: _ } => (),
+        Opt::Build { pull } => {
+            let pull_policy = if pull {
+                PullPolicy::Always
+            } else {
+                PullPolicy::IfNotPresent
+            };
+
+            controller.build_images(BuildPolicy::Always, pull_policy)?;
+        }
         Opt::Down {
             volumes: _,
             timeout,
@@ -138,13 +146,21 @@ fn main() -> Result<()> {
         }
         Opt::Up {
             detach: _,
-            build: _,
+            build,
             timeout,
             remove_orphans,
         } => {
             check_orphans(&mut controller, &mut stdout, remove_orphans, timeout)?;
 
             controller.pull_images(PullPolicy::IfNotPresent)?;
+
+            let build_policy = if build {
+                BuildPolicy::Always
+            } else {
+                BuildPolicy::IfChanged
+            };
+
+            controller.build_images(build_policy, PullPolicy::IfNotPresent)?;
 
             let diff = controller.start_containers_diff()?;
             container_apply(&mut controller, &mut stdout, diff, timeout)?;

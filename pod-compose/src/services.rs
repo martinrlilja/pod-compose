@@ -3,7 +3,7 @@ use std::{collections::BTreeMap as Map, path::Path};
 
 use crate::models::{
     Composition, Container, ContainerId, ContainerName, ContainerSpec, Image, ImageBuildSpec,
-    ImageId, ImageName,
+    ImageId, ImageName, PullPolicy,
 };
 
 /// A frontend that reads a container spec file such as `docker-compose.yml`.
@@ -20,7 +20,7 @@ pub trait ContainerBackend {
 
     fn pull_image(&mut self, name: &ImageName) -> Result<ImageId>;
 
-    fn build_image(&mut self, spec: ImageBuildSpec) -> Result<ImageId>;
+    fn build_image(&mut self, spec: &ImageBuildSpec, pull_policy: PullPolicy) -> Result<ImageId>;
 
     fn list_containers(
         &mut self,

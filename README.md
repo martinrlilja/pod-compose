@@ -10,8 +10,9 @@ With rust and cargo installed:
 $ cargo install --git https://github.com/martinrlilja/pod-compose.git pod-compose
 ```
 
-If you don't have it, [rustup.rs](https://rustup.rs/) is usually the
-easiest/best way to install it. Your OS's package manager might also have it.
+If you don't have rust installed, [rustup.rs](https://rustup.rs/) is usually
+the easiest/best way to install it. Your OS's package manager might also have
+it.
 
 ## Features
 
@@ -21,10 +22,11 @@ supported, the answer is probably no. That said - contributions are welcome!
 
 ### Commands
 
- * `up -d`, currently does not build images, or support non-detached mode, but
-    it will recreate your containers if something changes.
+ * `up -d`, does not support non-detached mode, but it will recreate your
+    containers if something changes.
  * `stop`
  * `down`
+ * `build`
  * `--remove-orphans`
 
 ### docker-compose.yml

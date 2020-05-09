@@ -34,9 +34,15 @@ pub struct ImagePullSpec {
     pub name: ImageName,
 }
 
-#[derive(Copy, Clone, Debug, Hash)]
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
 pub enum PullPolicy {
     IfNotPresent,
+    Always,
+}
+
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
+pub enum BuildPolicy {
+    IfChanged,
     Always,
 }
 
